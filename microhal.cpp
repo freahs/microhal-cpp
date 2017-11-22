@@ -1,7 +1,13 @@
-#include "microhal.hpp"
-
-#include <iostream>
+#include <algorithm>
+#include <deque>
 #include <fstream>
+#include <iostream>
+#include <iterator>
+#include <random>
+#include <sstream>
+#include <vector>
+
+#include "microhal.hpp"
 
 namespace microhal {
     std::vector<Token> tokenize(const std::string& s) {
@@ -28,29 +34,28 @@ namespace microhal {
     }
 
     //PREFIX
-    template<int ORDER>
     template<typename InputIterator>
-    Prefix<ORDER>::Prefix(InputIterator start, InputIterator stop) {
-        std::copy(start, std::distance(start, stop) > ORDER ? std::next(start, ORDER) : stop, m_tokens.begin());
+    Prefix::Prefix(InputIterator start, InputIterator stop, int order)
+    : m_order(order), m_tokens(static_cast<size_type>(m_order), Token{}) {
+        if (std::distance(start, stop) != static_cast<difference_type>(m_order)) {
+            throw std::runtime_error("Prefix::Prefix: Must init with order tokens.");
+        }
+        std::copy(start, stop, m_tokens.begin());
     }
 
-    template<int ORDER>
-    typename Prefix<ORDER>::const_iterator Prefix<ORDER>::begin() const {
+    typename Prefix::const_iterator Prefix::begin() const {
         return m_tokens.begin();
     }
 
-    template<int ORDER>
-    typename Prefix<ORDER>::const_iterator Prefix<ORDER>::end() const {
+    typename Prefix::const_iterator Prefix::end() const {
         return m_tokens.end();
     }
 
-    template<int ORDER>
-    bool Prefix<ORDER>::operator<(const Prefix<ORDER>& other) const {
+    bool Prefix::operator<(const Prefix& other) const {
         return m_tokens < other.m_tokens;
     }
 
-    template<int ORDER>
-    std::ostream& operator<<(std::ostream& os, const Prefix<ORDER>& p) {
+    std::ostream& operator<<(std::ostream& os, const Prefix& p) {
         return os << json(p);
     }
 
@@ -87,16 +92,14 @@ namespace microhal {
     }
 
     // MICROHAL
-    template<int ORDER>
-    auto& Microhal<ORDER>::suffixes(const Prefix<ORDER>& p) {
+    auto& Microhal::suffixes(const Prefix& p) {
         if (m_prefixes.find(p) == m_prefixes.end()) {
             m_prefixes[p] = std::make_pair(SuffixMap(), SuffixMap());
         }
         return m_prefixes[p];
     }
 
-    template<int ORDER>
-    void Microhal<ORDER>::add_keyword(const std::string& kw) {
+    void Microhal::add_keyword(const std::string& kw) {
         if (m_keywords.find(kw) == m_keywords.end()) {
             m_keywords[kw] = 1;
         } else if (m_keywords[kw] + 1 > m_keywords[kw]) {
@@ -104,8 +107,7 @@ namespace microhal {
         }
     }
 
-    template<int ORDER>
-    auto Microhal<ORDER>::get_best_prefixes(std::vector<Token> keywords) const {
+    auto Microhal::get_best_prefixes(std::vector<Token> keywords) const {
 
         static auto comp = [&](const Token& t1, const Token& t2) -> bool {
             auto t1_it = m_keywords.find(t1);
@@ -119,7 +121,7 @@ namespace microhal {
         std::sort(keywords.begin(), keywords.end(), comp);
 
         // find the prefixes associated with the first (most uncommon) keyword
-        std::vector<Prefix<ORDER>> prefixes;
+        std::vector<Prefix> prefixes;
         for (auto& kw : keywords) {
             for (auto& p : m_prefixes) {
                 if (std::find(p.first.begin(), p.first.end(), kw) != p.first.end()) {
@@ -130,22 +132,21 @@ namespace microhal {
                 return prefixes;
             }
         }
-        return std::vector<Prefix<ORDER>>();
+        return std::vector<Prefix>();
     }
 
-    template<int ORDER>
-    std::string Microhal<ORDER>::build_response(Prefix<ORDER> p) {
+    std::string Microhal::build_response(Prefix p) {
         std::deque<Token> tokens(p.begin(), p.end());
-        int length = ORDER;
+        auto length = m_order;
         while (length < 100 && (tokens.front() != "" || tokens.back() != "")) {
             if (tokens.front() != "") {
-                Prefix<ORDER> lp(tokens.begin(), std::next(tokens.begin(), ORDER));
+                Prefix lp(tokens.begin(), std::next(tokens.begin(), m_order), m_order);
                 auto t = suffixes(lp).first.get();
                 tokens.push_front(t);
                 ++length;
             }
             if (tokens.back() != "") {
-                Prefix<ORDER> rp(std::prev(tokens.end(), ORDER), tokens.end());
+                Prefix rp(std::prev(tokens.end(), m_order), tokens.end(), m_order);
                 auto t = suffixes(rp).second.get();
                 tokens.push_back(t);
                 ++length;
@@ -156,8 +157,10 @@ namespace microhal {
         return os.str();
     }
 
-    template<int ORDER>
-    std::string Microhal<ORDER>::add(const std::string& input) {
+    Microhal::Microhal(int order) : m_order(order) {
+    }
+
+    std::string Microhal::add(const std::string& input) {
         auto tokens = tokenize(input);
         auto prefixes = get_best_prefixes(tokens);
 
@@ -168,10 +171,10 @@ namespace microhal {
         }
 
         auto start = tokens.cbegin();
-        auto stop = std::next(start, ORDER);
+        auto stop = std::next(start, m_order);
         stop = stop < tokens.end() ? stop : tokens.end();
         while (start == tokens.begin() || stop <= tokens.end()) {
-            Prefix<ORDER> p(start, stop); 
+            Prefix p(start, stop, m_order); 
             if (start > tokens.begin()) { suffixes(p).first.add(*std::prev(start)); }
             else                        { suffixes(p).first.add(""); }
             if (stop < tokens.end())    { suffixes(p).second.add(*stop); }
@@ -186,20 +189,17 @@ namespace microhal {
         return ret;
     }
 
-    template<int ORDER>
-    std::ostream& operator<<(std::ostream& os, const microhal::Microhal<ORDER>& m) {
-        return os << std::setw(4) << json(m.m_prefixes);
+    std::ostream& operator<<(std::ostream& os, const microhal::Microhal& m) {
+        return os << json(m.m_prefixes);
     }
 
     // JSON
-    template<int ORDER>
-    void to_json(json& j, const Prefix<ORDER>& p) {
-        j = p.m_tokens;
+    void to_json(json& j, const Prefix& p) {
+        j = {p.m_order, p.m_tokens};
     }
 
-    template<int ORDER>
-    void from_json(const json& j, Prefix<ORDER>& p) {
-        p = Prefix<ORDER>(j.begin(), j.end());
+    void from_json(const json& j, Prefix& p) {
+        p = Prefix(j[1].begin(), j[1].end(), j[0]);
     }
 
     void to_json(json& j, const SuffixMap& sm) {
@@ -222,38 +222,34 @@ namespace microhal {
         p1 = p2;
     }
 
-    template<int ORDER>
-    void to_json(json& j, const std::map<microhal::Prefix<ORDER>, std::pair<microhal::SuffixMap, microhal::SuffixMap>>& m) {
+    void to_json(json& j, const std::map<microhal::Prefix, std::pair<microhal::SuffixMap, microhal::SuffixMap>>& m) {
         for (auto& p : m) {
             j.push_back({p.first, json(p.second)});
         }
     }
 
-    template<int ORDER>
-    void from_json(const json& j, std::map<microhal::Prefix<ORDER>, std::pair<microhal::SuffixMap, microhal::SuffixMap>>& m) {
+    void from_json(const json& j, std::map<microhal::Prefix, std::pair<microhal::SuffixMap, microhal::SuffixMap>>& m) {
         for (auto& p : j) {
-            auto prefix = p[0].get<microhal::Prefix<ORDER>>();
+            auto prefix = p[0].get<microhal::Prefix>();
             auto suffix_map = p[1].get<std::pair<microhal::SuffixMap, microhal::SuffixMap>>();
             m[prefix] = suffix_map;
         }
     }
 
-    template<int ORDER>
-    void to_json(json& j, const microhal::Microhal<ORDER>& m) {
-        j = json{ORDER, m.m_keywords, m.m_prefixes};
+    void to_json(json& j, const microhal::Microhal& m) {
+        j = json{m.m_order, m.m_keywords, m.m_prefixes};
     }
 
-    template<int ORDER>
-    void from_json(const json& j, microhal::Microhal<ORDER>& m) {
-        if (j[0] != ORDER) { throw std::runtime_error("Trying to load model of different order"); }
+    void from_json(const json& j, microhal::Microhal& m) {
+        m.m_order = j[0].get<int>();
         m.m_keywords = j[1].get<std::map<std::string, int>>();
-        m.m_prefixes = j[2].get<std::map<microhal::Prefix<ORDER>, std::pair<microhal::SuffixMap, microhal::SuffixMap>>>();
+        m.m_prefixes = j[2].get<std::map<microhal::Prefix, std::pair<microhal::SuffixMap, microhal::SuffixMap>>>();
     }
 
 }
 
 int main() {
-    microhal::Microhal<2> m;
+    microhal::Microhal m(4);
     std::string in;
     std::cout << "HEJ!!!!" << std::endl;
     while (std::getline(std::cin, in)) {
@@ -266,7 +262,7 @@ int main() {
             std::ifstream i("db.json");
             json j;
             i >> j;
-            m = j.get<microhal::Microhal<2>>();
+            m = j.get<microhal::Microhal>();
         }
         else { std::cout << m.add(in) << std::endl; }
     }
